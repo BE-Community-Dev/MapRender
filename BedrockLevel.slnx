@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BedrockLevel.Demo/BedrockLevel.Demo.csproj" />
+    <Project Path="src/BedrockLevel/BedrockLevel.csproj" />
+    <Project Path="src/BedrockRender.Demo/BedrockRender.Demo.csproj" />
+    <Project Path="src/BedrockRender/BedrockRender.csproj" />
+  </Folder>
+</Solution>
