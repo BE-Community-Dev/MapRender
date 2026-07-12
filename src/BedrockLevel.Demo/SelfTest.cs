@@ -28,7 +28,7 @@ namespace BedrockLevel.Demo
 
             var level = new global::BedrockLevel.Level.BedrockLevel();
             bool opened = level.Open(dir);
-            Console.WriteLine($"[selftest] Open = {opened}, keys = {level.Store.KeyCount}");
+            Console.WriteLine($"[selftest] Open = {opened}, chunks = {level.CachedChunkCount}");
             if (!opened) return 2;
 
             int fail = 0;

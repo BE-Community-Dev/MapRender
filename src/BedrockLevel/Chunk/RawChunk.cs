@@ -12,7 +12,7 @@ namespace BedrockLevel.Chunk
     /// </summary>
     public sealed class RawChunk
     {
-        private static readonly ChunkKey.KeyType[] NormalKeys =
+        internal static readonly ChunkKey.KeyType[] NormalKeys =
         {
             ChunkKey.KeyType.Data3D, ChunkKey.KeyType.VersionNew, ChunkKey.KeyType.VersionOld,
             ChunkKey.KeyType.Data2D, ChunkKey.KeyType.Data2DLegacy, ChunkKey.KeyType.BlockEntity,
@@ -76,8 +76,6 @@ namespace BedrockLevel.Chunk
                 int count = dig.Length / 8;
                 for (int i = 0; i < count; i++)
                 {
-                    // digest stores the (big-endian) storage key bytes directly; the
-                    // lookup key is "actorprefix" + those 8 raw bytes.
                     var uid = new byte[8];
                     Buffer.BlockCopy(dig, i * 8, uid, 0, 8);
                     var ak = new byte[19];
@@ -92,9 +90,60 @@ namespace BedrockLevel.Chunk
         }
 
         /// <summary>
-        /// Looks up a chunk key in the store, trying both the modern (zigzag-varint)
-        /// and legacy (4-byte int) key encodings so either save layout is supported.
+        /// Same as Load(LevelDbStore) but uses a lookup function instead.
+        /// The lookup receives a user-key byte array and returns the value, or null if not found.
         /// </summary>
+        public bool LoadFromLookup(Func<byte[], byte[]> lookup)
+        {
+            if (Pos == null) return false;
+            foreach (var kt in NormalKeys)
+            {
+                var ck = new ChunkKey { Type = kt, Cp = Pos };
+                var raw = LookupKey(ck, lookup);
+                if (raw != null && raw.Length > 0)
+                    NormalData[kt] = raw;
+            }
+
+            var (minIdx, maxIdx) = Pos.GetSubchunkIndexRange(Version());
+            for (int idx = minIdx; idx <= maxIdx; idx++)
+            {
+                var ck = new ChunkKey { Type = ChunkKey.KeyType.SubChunkTerrain, Cp = Pos, YIndex = (sbyte)idx };
+                var raw = LookupKey(ck, lookup);
+                if (raw != null)
+                    SubChunkData[(sbyte)idx] = raw;
+            }
+
+            var dk = new ActorDigestKey { Cp = Pos };
+            byte[] dig = lookup(dk.ToRawModern());
+            if (dig == null || dig.Length == 0)
+                dig = lookup(dk.ToRaw());
+            if (dig != null && dig.Length > 0)
+            {
+                ActorDigest = dig;
+                int count = dig.Length / 8;
+                for (int i = 0; i < count; i++)
+                {
+                    var uid = new byte[8];
+                    Buffer.BlockCopy(dig, i * 8, uid, 0, 8);
+                    var ak = new byte[19];
+                    var prefix = System.Text.Encoding.ASCII.GetBytes("actorprefix");
+                    Buffer.BlockCopy(prefix, 0, ak, 0, 11);
+                    Buffer.BlockCopy(uid, 0, ak, 11, 8);
+                    var araw = lookup(ak);
+                    if (araw != null && araw.Length > 0)
+                        Entities[new ByteString(uid)] = araw;
+                }
+            }
+            return Loaded();
+        }
+
+        private static byte[] LookupKey(ChunkKey ck, Func<byte[], byte[]> lookup)
+        {
+            var raw = lookup(ck.ToRawModern());
+            if (raw != null && raw.Length > 0) return raw;
+            return lookup(ck.ToRawLegacy());
+        }
+
         private static bool TryGetStoreValue(LevelDbStore store, ChunkKey ck, out byte[] raw)
         {
             if (store.TryGetValue(ck.ToRawModern(), out raw) && raw != null && raw.Length > 0)

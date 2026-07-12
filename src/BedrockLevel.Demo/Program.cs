@@ -44,8 +44,6 @@ namespace BedrockLevel.Demo
 
             Console.WriteLine($"  Level name : {level.Dat.LevelName}");
             Console.WriteLine($"  Spawn      : ({level.Dat.Spawn.X}, {level.Dat.Spawn.Y}, {level.Dat.Spawn.Z})");
-            Console.WriteLine($"  DB keys    : {level.Store.KeyCount}");
-
             var positions = level.ChunkPositions().ToList();
             Console.WriteLine($"  Chunks     : {positions.Count}");
 

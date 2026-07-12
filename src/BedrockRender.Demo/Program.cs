@@ -10,18 +10,16 @@ namespace BedrockRender.Demo
         public static int Main(string[] args)
         {
             var opts = RenderOptions.Parse(args);
-
-            if (string.IsNullOrEmpty(opts.SaveDir))
-            {
-                Console.Error.WriteLine("usage: BedrockRender.Demo <saveDir> [--dim 0|1|2] [--mode surface|biome|height] [--scale N] [--save out.png]");
-                return 1;
-            }
-
             bool saveMode = Array.Exists(args, a => a == "--save");
 
             var app = BuildAvaloniaApp();
             if (saveMode)
             {
+                if (string.IsNullOrEmpty(opts.SaveDir))
+                {
+                    Console.Error.WriteLine("usage: BedrockRender.Demo <saveDir> --save out.png [--dim 0|1|2] [--mode surface|biome|height] [--scale N]");
+                    return 1;
+                }
                 app.SetupWithoutStarting();
                 WorldRenderer.Save(opts);
                 return 0;

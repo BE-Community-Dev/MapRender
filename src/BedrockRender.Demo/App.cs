@@ -2,10 +2,8 @@ using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
-using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
-using Avalonia.Layout;
 
 namespace BedrockRender.Demo
 {
@@ -20,7 +18,8 @@ namespace BedrockRender.Demo
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
-                desktop.MainWindow = new MainWindow();
+                var args = desktop.Args ?? Array.Empty<string>();
+                desktop.MainWindow = new MainWindow(RenderOptions.Parse(args));
             }
             base.OnFrameworkInitializationCompleted();
         }
