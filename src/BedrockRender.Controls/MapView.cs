@@ -2,6 +2,8 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -22,6 +24,10 @@ namespace BedrockRender.Controls
     public class MapView : TemplatedControl
     {
         private const int MaxTiles = 2000;
+
+        private Dictionary<string, Bitmap> entityImages_ = new();
+        private readonly ConcurrentDictionary<(int, int), List<EntityData>> chunkEntities_ = new();
+        private HashSet<string> enabledEntityTypes_ = new();
 
         private global::BedrockLevel.Level.BedrockLevel level_;
         private List<ChunkPos> positions_;
@@ -79,6 +85,24 @@ namespace BedrockRender.Controls
             private set => SetValue(LevelNameProperty, value);
         }
 
+        public static readonly StyledProperty<string> EntityImagesPathProperty =
+            AvaloniaProperty.Register<MapView, string>(nameof(EntityImagesPath),
+                @".\Assets\Entity");
+
+        public string EntityImagesPath
+        {
+            get => GetValue(EntityImagesPathProperty);
+            set => SetValue(EntityImagesPathProperty, value);
+        }
+
+        /// <summary>Gets or sets the set of enabled entity identifiers (without "minecraft:" prefix).
+        /// null = show all entities that have images.</summary>
+        public HashSet<string> EnabledEntityTypes
+        {
+            get => enabledEntityTypes_;
+            set => enabledEntityTypes_ = value;
+        }
+
         public event Action<string> StatusChanged;
         public event Action<double?> ProgressChanged;
 
@@ -100,6 +124,7 @@ namespace BedrockRender.Controls
             tileScale_ = tileScale;
             palette_ = ColorPalette.LoadEmbedded();
             renderer_ = new ChunkRenderer(palette_);
+            LoadEntityImages(EntityImagesPath);
             ComputeBounds();
             FitToView();
             RenderView();
@@ -117,6 +142,8 @@ namespace BedrockRender.Controls
                 RenderAll();
             }
         }
+
+        public void RefreshView() => InvalidateView();
 
         public void FitToView()
         {
@@ -192,6 +219,7 @@ namespace BedrockRender.Controls
                 bmp.Dispose();
             tiles_.Clear();
             lastUsed_.Clear();
+            chunkEntities_.Clear();
             doneBlocks_ = 0;
 
             if (level_ == null || chunkCount_ == 0)
@@ -317,6 +345,21 @@ namespace BedrockRender.Controls
                         {
                             var span = new Span<byte>((void*)fb.Address, len);
                             rc.BlitTo(span, blockPx, blockPx, offX, offY);
+                        }
+
+                        if (chunk.Entities.Count > 0 && entityImages_.Count > 0 && enabledEntityTypes_ != null)
+                        {
+                            var ents = new List<EntityData>(chunk.Entities.Count);
+                            foreach (var actor in chunk.Entities)
+                            {
+                                string id = actor.Identifier;
+                                int ci = id.IndexOf(':');
+                                if (ci >= 0) id = id.Substring(ci + 1);
+                                if (enabledEntityTypes_.Count == 0 || enabledEntityTypes_.Contains(id))
+                                    ents.Add(new EntityData(id, actor.Pos.X, actor.Pos.Z));
+                            }
+                            if (ents.Count > 0)
+                                chunkEntities_[(cp.X, cp.Z)] = ents;
                         }
                     }
                 }
@@ -453,6 +496,9 @@ namespace BedrockRender.Controls
                 }
             }
 
+            if (chunkEntities_.Count > 0 && entityImages_.Count > 0)
+                RenderEntities(context, scale, ox, oy, bxMin, bxMax, bzMin, bzMax);
+
             if (needsFill && level_ != null && !backgroundFillRunning_ && !renderAllRunning_)
             {
                 backgroundFillRunning_ = true;
@@ -506,6 +552,79 @@ namespace BedrockRender.Controls
                     bmp.Dispose();
                 }
                 lastUsed_.TryRemove(key, out _);
+            }
+        }
+
+        // ----- Entity rendering -----
+
+        private void RenderEntities(DrawingContext context, double scale, double ox, double oy,
+            int bxMin, int bxMax, int bzMin, int bzMax)
+        {
+            int bc = BlockChunks;
+            const double iconSize = 16;
+
+            using (context.PushRenderOptions(new Avalonia.Media.RenderOptions
+                   {
+                       BitmapInterpolationMode = BitmapInterpolationMode.None
+                   }))
+            {
+                for (int bx = bxMin; bx <= bxMax; bx++)
+                {
+                    for (int bz = bzMin; bz <= bzMax; bz++)
+                    {
+                        int cxBase = bx * bc;
+                        int czBase = bz * bc;
+
+                        for (int lcx = 0; lcx < bc; lcx++)
+                        {
+                            int cx = cxBase + lcx;
+                            if (cx < minCx_ || cx > maxCx_) continue;
+
+                            for (int lcz = 0; lcz < bc; lcz++)
+                            {
+                                int cz = czBase + lcz;
+                                if (cz < minCz_ || cz > maxCz_) continue;
+
+                                if (chunkEntities_.TryGetValue((cx, cz), out var ents))
+                                {
+                                    foreach (var ent in ents)
+                                    {
+                                        double px = ent.X * scale + ox;
+                                        double py = ent.Z * scale + oy;
+
+                                        if (entityImages_.TryGetValue(ent.Identifier, out var img))
+                                        {
+                                            context.DrawImage(img,
+                                                new Rect(px - iconSize / 2, py - iconSize / 2, iconSize, iconSize));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private void LoadEntityImages(string path)
+        {
+            entityImages_?.Clear();
+            entityImages_ = new Dictionary<string, Bitmap>();
+            if (string.IsNullOrEmpty(path)) return;
+            string dir = Path.IsPathRooted(path) ? path : Path.Combine(AppContext.BaseDirectory, path);
+            if (!Directory.Exists(dir)) return;
+            foreach (var file in Directory.GetFiles(dir, "*.png"))
+            {
+                try
+                {
+                    var name = Path.GetFileNameWithoutExtension(file);
+                    var data = File.ReadAllBytes(file);
+                    using var ms = new MemoryStream(data);
+                    entityImages_[name] = new Bitmap(ms);
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -744,6 +863,10 @@ namespace BedrockRender.Controls
             foreach (var bmp in tiles_.Values)
                 bmp.Dispose();
             tiles_.Clear();
+            foreach (var img in entityImages_.Values)
+                img.Dispose();
+            entityImages_.Clear();
+            chunkEntities_.Clear();
         }
     }
 }

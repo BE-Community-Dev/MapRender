@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Threading.Tasks;
 using Avalonia;
@@ -20,6 +21,7 @@ namespace BedrockRender.Demo
         private readonly ComboBox dimBox_;
         private readonly ComboBox modeBox_;
         private readonly ComboBox detailBox_;
+        private readonly CheckBox entityCheck_;
         private readonly Button pickBtn_;
         private global::BedrockLevel.Level.BedrockLevel level_;
 
@@ -66,6 +68,10 @@ namespace BedrockRender.Demo
             var applyBtn = new Button { Content = "应用", Width = 60 };
             applyBtn.Click += (_, __) => ApplyView();
             top.Children.Add(applyBtn);
+
+            entityCheck_ = new CheckBox { Content = "显示实体", IsChecked = true, Margin = new Thickness(8, 0, 0, 0) };
+            entityCheck_.IsCheckedChanged += (_, _) => UpdateEntityFilter();
+            top.Children.Add(entityCheck_);
 
             var fitBtn = new Button { Content = "适应窗口", Width = 80 };
             fitBtn.Click += (_, __) => map_.FitToView();
@@ -133,6 +139,15 @@ namespace BedrockRender.Demo
             var mode = (ViewMode)modeBox_.SelectedIndex;
             int detail = int.Parse((string)detailBox_.SelectedItem, CultureInfo.InvariantCulture);
             map_.UpdateView(dim, mode, detail);
+        }
+
+        private void UpdateEntityFilter()
+        {
+            if (entityCheck_.IsChecked == true)
+                map_.EnabledEntityTypes = new HashSet<string>(); // show all
+            else
+                map_.EnabledEntityTypes = null; // show none
+            map_.RefreshView();
         }
 
         private void LoadLevelAsync(string dir)
