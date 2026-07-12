@@ -49,7 +49,6 @@ namespace BedrockRender
         private readonly ColorPalette palette_;
 
         public ChunkRenderer(ColorPalette palette) => palette_ = palette;
-
         public RenderedChunk Render(BedrockLevel.Chunk.Chunk chunk, ViewMode mode, int scale = 4)
         {
             int size = 16 * scale;
@@ -106,9 +105,20 @@ namespace BedrockRender
                     }
                     string name = chunk.GetBlockName(x, topY, z);
                     byte biomeId = chunk.GetTopBiome(x, z);
-                    return palette_.ResolveSurfaceColor(name, biomeId);
+                    var c = palette_.ResolveSurfaceColor(name, biomeId);
+                    double shade = HeightShadeFactor(topY, minY, maxY);
+                    return ((byte)(c.r * shade), (byte)(c.g * shade), (byte)(c.b * shade));
                 }
             }
+        }
+
+        /// <summary>Height-based shadow factor: lower terrain is darker, higher terrain brighter.</summary>
+        private static double HeightShadeFactor(int h, int minY, int maxY)
+        {
+            double range = Math.Max(1, maxY - minY);
+            double t = (double)(h - minY) / range;
+            t = Math.Max(0, Math.Min(1, t));
+            return 0.55 + t * 0.45;
         }
 
         private static (byte r, byte g, byte b) HeightRamp(double t)
