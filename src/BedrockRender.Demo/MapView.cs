@@ -633,28 +633,34 @@ namespace BedrockRender.Demo
                 centerZ_ = dragCenterZ_ - dy / viewScale_;
 
                 int m = margin_ > 0 ? margin_ : 100;
-                // Translate the cached offscreen by the drag delta, clamped to the margin so no
-                // blank edges are revealed; once the drag passes the margin we re-render at the new
-                // center and re-anchor the drag (so panning stays smooth over long distances).
-                double tdx = Math.Max(-m, Math.Min(m, dx));
-                double tdy = Math.Max(-m, Math.Min(m, dy));
-                panX_ = tdx;
-                panY_ = tdy;
-
+        
+                // 🔧 关键修复：pan 始终是原始 dx/dy，不重置
+                // 但是当超出 margin 时，重新生成离屏缓存
                 if (Math.Abs(dx) >= m || Math.Abs(dy) >= m)
                 {
+                    // 不重置 pan，而是基于当前中心重新渲染
+                    renderCenterX_ = centerX_;
+                    renderCenterZ_ = centerZ_;
+                    // 重置拖拽起点，但保持 pan 不变
                     dragStart_ = p;
                     dragCenterX_ = centerX_;
                     dragCenterZ_ = centerZ_;
-                    renderCenterX_ = centerX_;
-                    renderCenterZ_ = centerZ_;   // re-anchor the offscreen at the new center
-                    panX_ = panY_ = 0;
-                    InvalidateView();
+            
+                    // 重新渲染离屏缓存（同步）
+                    RenderView();
+            
+                    // pan 继续保持，但基于新的基准
+                    // 不需要重置为 0
                 }
-                else
-                {
-                    InvalidateVisual();
-                }
+        
+                // pan 始终反映从 dragStart 到当前位置的偏移
+                panX_ = p.X - dragStart_.X;
+                panY_ = p.Y - dragStart_.Y;
+                // 但需要限制在 margin 内
+                panX_ = Math.Max(-m, Math.Min(m, panX_));
+                panY_ = Math.Max(-m, Math.Min(m, panY_));
+        
+                InvalidateVisual();
             }
         }
 
