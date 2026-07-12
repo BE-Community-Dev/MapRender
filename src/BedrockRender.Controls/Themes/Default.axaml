@@ -1,0 +1,6 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:controls="clr-namespace:BedrockRender.Controls">
+  <Style Selector="controls|MapView">
+    <Setter Property="Background" Value="#121216" />
+  </Style>
+</Styles>

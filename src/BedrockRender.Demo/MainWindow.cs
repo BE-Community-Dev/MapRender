@@ -8,6 +8,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using BedrockRender.Controls;
 
 namespace BedrockRender.Demo
 {
@@ -58,7 +59,7 @@ namespace BedrockRender.Demo
             {
                 Width = 70,
                 ItemsSource = new[] { "1", "2", "4", "8" },
-                SelectedIndex = 2
+                SelectedIndex = 0
             };
             top.Children.Add(detailBox_);
 

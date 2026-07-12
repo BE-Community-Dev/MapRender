@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -16,9 +17,9 @@ using BedrockLevel.Keys;
 using BedrockLevel.Level;
 using BedrockRender;
 
-namespace BedrockRender.Demo
+namespace BedrockRender.Controls
 {
-    internal sealed class MapView : Avalonia.Controls.Control
+    public class MapView : TemplatedControl
     {
         private const int MaxTiles = 2000;
 
@@ -69,10 +70,17 @@ namespace BedrockRender.Demo
         private bool renderPending_;
         private int margin_;
 
+        public static readonly StyledProperty<string> LevelNameProperty =
+            AvaloniaProperty.Register<MapView, string>(nameof(LevelName), "");
+
+        public string LevelName
+        {
+            get => GetValue(LevelNameProperty);
+            private set => SetValue(LevelNameProperty, value);
+        }
+
         public event Action<string> StatusChanged;
         public event Action<double?> ProgressChanged;
-
-        public string LevelName { get; private set; } = "";
 
         public MapView()
         {
@@ -180,9 +188,6 @@ namespace BedrockRender.Demo
             renderCenterZ_ = centerZ_;
             cts_?.Cancel();
 
-            // Dispose old tiles immediately (no compress on UI thread — that would freeze).
-            // They were at a potentially different LOD and wouldn't match new cache keys anyway.
-            // The cache is populated by EvictTiles during normal rendering.
             foreach (var bmp in tiles_.Values)
                 bmp.Dispose();
             tiles_.Clear();
@@ -215,7 +220,7 @@ namespace BedrockRender.Demo
             InvalidateView();
             RaiseStatus();
 
-            int maxPar = Math.Max(1, Environment.ProcessorCount);
+            int maxPar = Math.Max(1, Environment.ProcessorCount * 2);
             renderAllRunning_ = true;
             level_?.BeginSharedLoad();
             Task.Factory.StartNew(() =>
@@ -339,156 +344,144 @@ namespace BedrockRender.Demo
         private void QueueInvalidate() => InvalidateView();
 
         private void RenderView()
-{
-    renderPending_ = false;
-    if (!viewDirty_) return;
-    viewDirty_ = false;
-
-    double w = Bounds.Width, h = Bounds.Height;
-    if (w <= 0 || h <= 0)
-    {
-        viewDirty_ = true;
-        return;
-    }
-
-    int margin = (int)Math.Max(64, Math.Min(300, w / 2 - 1));
-    margin_ = margin;
-    
-    int ow = (int)w + 2 * margin;
-    int oh = (int)h + 2 * margin;
-
-    if (view_ == null ||
-        view_.PixelSize.Width != ow ||
-        view_.PixelSize.Height != oh)
-    {
-        view_?.Dispose();
-        view_ = new RenderTargetBitmap(new PixelSize(ow, oh), new Vector(96, 96));
-    }
-
-    using (var dc = view_.CreateDrawingContext())
-    {
-        // ============ 关键修改 2：使用 centerX_/centerZ_ 而不是 renderCenterX_/renderCenterZ_ ============
-        RenderScene(dc, ow, oh, w, h);
-    }
-    EvictTiles();
-    InvalidateVisual();
-}
-
-private void RenderScene(DrawingContext context, double viewW, double viewH, double displayW, double displayH)
-{
-    context.FillRectangle(new SolidColorBrush(Color.FromRgb(18, 18, 22)), new Rect(0, 0, viewW, viewH));
-
-    if (level_ == null)
-    {
-        DrawCenteredText(context, viewW, viewH, "请选择存档文件夹", 18);
-        return;
-    }
-    if (chunkCount_ == 0)
-    {
-        DrawCenteredText(context, viewW, viewH, "该维度没有可用区块", 18);
-        return;
-    }
-
-    int bc = BlockChunks;
-    int ts = tileScale_;
-    double scale = viewScale_;
-    
-    // ============ 关键修改：使用 centerX_/centerZ_ 而不是 renderCenterX_/renderCenterY_ ============
-    // 计算偏移：view_ 的分辨率是 viewW × viewH，显示区域在 view_ 中的位置是 (viewW/2 - displayW/2) 到 (viewW/2 + displayW/2)
-    // 所以渲染时，世界坐标 (0,0) 应该对应 view_ 中 (viewW/2, viewH/2) 的位置
-    double centerOffsetX = (viewW - displayW) / 2.0;
-    double centerOffsetY = (viewH - displayH) / 2.0;
-    
-    // 注意：这里使用 centerX_/centerZ_（当前视图中心），并且用 scale 计算偏移
-    // 实际上 RenderScene 应该以 display 区域为中心渲染，但 view_ 分辨率更大
-    // 所以我们把世界坐标映射到 view_ 的像素坐标
-    double ox = viewW / 2.0 - centerX_ * scale;
-    double oy = viewH / 2.0 - centerZ_ * scale;
-
-    // 计算可见范围（在世界坐标中）
-    double blkLeft = -ox / scale;
-    double blkRight = (viewW - ox) / scale;
-    double blkTop = -oy / scale;
-    double blkBottom = (viewH - oy) / scale;
-
-    int bxMin = (int)Math.Floor(blkLeft / (bc * 16));
-    int bxMax = (int)Math.Floor(blkRight / (bc * 16));
-    int bzMin = (int)Math.Floor(blkTop / (bc * 16));
-    int bzMax = (int)Math.Floor(blkBottom / (bc * 16));
-
-    // Clamp to world bounds
-    int bcMin = (int)Math.Floor((double)minCx_ / bc);
-    int bcMaxW = (int)Math.Floor((double)maxCx_ / bc);
-    int bzMinW = (int)Math.Floor((double)minCz_ / bc);
-    int bzMaxW = (int)Math.Floor((double)maxCz_ / bc);
-    bxMin = Math.Max(bxMin, bcMin);
-    bxMax = Math.Min(bxMax, bcMaxW);
-    bzMin = Math.Max(bzMin, bzMinW);
-    bzMax = Math.Min(bzMax, bzMaxW);
-
-    int f = Interlocked.Increment(ref frame_);
-    bool needsFill = false;
-
-    for (int bx = bxMin; bx <= bxMax; bx++)
-    {
-        for (int bz = bzMin; bz <= bzMax; bz++)
         {
-            if (tiles_.TryGetValue((bx, bz), out var tile))
+            renderPending_ = false;
+            if (!viewDirty_) return;
+            viewDirty_ = false;
+
+            double w = Bounds.Width, h = Bounds.Height;
+            if (w <= 0 || h <= 0)
             {
-                // 计算 tile 在 view_ 中的位置（像素坐标）
-                double dx = (bx * bc * 16.0) * scale + ox;
-                double dy = (bz * bc * 16.0) * scale + oy;
-                double dw = bc * 16.0 * scale;
-                
-                // 使用最近邻插值绘制 tile
-                using (context.PushRenderOptions(new Avalonia.Media.RenderOptions
-                {
-                    BitmapInterpolationMode = BitmapInterpolationMode.None
-                }))
-                {
-                    context.DrawImage(tile, new Rect(dx, dy, dw, dw));
-                }
-                
-                if (lastUsed_.TryGetValue((bx, bz), out var lu) && lu != int.MaxValue)
-                    lastUsed_[(bx, bz)] = f;
+                viewDirty_ = true;
+                return;
             }
-            else
+
+            int margin = (int)Math.Max(64, Math.Min(300, w / 2 - 1));
+            margin_ = margin;
+
+            int ow = (int)w + 2 * margin;
+            int oh = (int)h + 2 * margin;
+
+            if (view_ == null ||
+                view_.PixelSize.Width != ow ||
+                view_.PixelSize.Height != oh)
             {
-                needsFill = true;
+                view_?.Dispose();
+                view_ = new RenderTargetBitmap(new PixelSize(ow, oh), new Vector(96, 96));
+            }
+
+            using (var dc = view_.CreateDrawingContext())
+            {
+                RenderScene(dc, ow, oh, w, h);
+            }
+            EvictTiles();
+            InvalidateVisual();
+        }
+
+        private void RenderScene(DrawingContext context, double viewW, double viewH, double displayW, double displayH)
+        {
+            context.FillRectangle(new SolidColorBrush(Color.FromRgb(18, 18, 22)), new Rect(0, 0, viewW, viewH));
+
+            if (level_ == null)
+            {
+                DrawCenteredText(context, viewW, viewH, "请选择存档文件夹", 18);
+                return;
+            }
+            if (chunkCount_ == 0)
+            {
+                DrawCenteredText(context, viewW, viewH, "该维度没有可用区块", 18);
+                return;
+            }
+
+            int bc = BlockChunks;
+            int ts = tileScale_;
+            double scale = viewScale_;
+
+            double centerOffsetX = (viewW - displayW) / 2.0;
+            double centerOffsetY = (viewH - displayH) / 2.0;
+
+            double ox = viewW / 2.0 - centerX_ * scale;
+            double oy = viewH / 2.0 - centerZ_ * scale;
+
+            double blkLeft = -ox / scale;
+            double blkRight = (viewW - ox) / scale;
+            double blkTop = -oy / scale;
+            double blkBottom = (viewH - oy) / scale;
+
+            int bxMin = (int)Math.Floor(blkLeft / (bc * 16));
+            int bxMax = (int)Math.Floor(blkRight / (bc * 16));
+            int bzMin = (int)Math.Floor(blkTop / (bc * 16));
+            int bzMax = (int)Math.Floor(blkBottom / (bc * 16));
+
+            int bcMin = (int)Math.Floor((double)minCx_ / bc);
+            int bcMaxW = (int)Math.Floor((double)maxCx_ / bc);
+            int bzMinW = (int)Math.Floor((double)minCz_ / bc);
+            int bzMaxW = (int)Math.Floor((double)maxCz_ / bc);
+            bxMin = Math.Max(bxMin, bcMin);
+            bxMax = Math.Min(bxMax, bcMaxW);
+            bzMin = Math.Max(bzMin, bzMinW);
+            bzMax = Math.Min(bzMax, bzMaxW);
+
+            int f = Interlocked.Increment(ref frame_);
+            bool needsFill = false;
+
+            for (int bx = bxMin; bx <= bxMax; bx++)
+            {
+                for (int bz = bzMin; bz <= bzMax; bz++)
+                {
+                    if (tiles_.TryGetValue((bx, bz), out var tile))
+                    {
+                        double dx = (bx * bc * 16.0) * scale + ox;
+                        double dy = (bz * bc * 16.0) * scale + oy;
+                        double dw = bc * 16.0 * scale;
+
+                        using (context.PushRenderOptions(new Avalonia.Media.RenderOptions
+                        {
+                            BitmapInterpolationMode = BitmapInterpolationMode.None
+                        }))
+                        {
+                            context.DrawImage(tile, new Rect(dx, dy, dw, dw));
+                        }
+
+                        if (lastUsed_.TryGetValue((bx, bz), out var lu) && lu != int.MaxValue)
+                            lastUsed_[(bx, bz)] = f;
+                    }
+                    else
+                    {
+                        needsFill = true;
+                    }
+                }
+            }
+
+            if (needsFill && level_ != null && !backgroundFillRunning_ && !renderAllRunning_)
+            {
+                backgroundFillRunning_ = true;
+                var token = cts_?.Token ?? CancellationToken.None;
+                int maxPar = Math.Max(1, Environment.ProcessorCount * 2);
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        var fillBlocks = new List<(int, int)>();
+                        for (int bx = bxMin; bx <= bxMax; bx++)
+                            for (int bz = bzMin; bz <= bzMax; bz++)
+                                if (!tiles_.ContainsKey((bx, bz)))
+                                    fillBlocks.Add((bx, bz));
+
+                        Parallel.ForEach(fillBlocks,
+                            new ParallelOptions { MaxDegreeOfParallelism = maxPar, CancellationToken = token },
+                            b => RenderBlock(b, token));
+                    }
+                    catch (OperationCanceledException) { }
+                    finally
+                    {
+                        backgroundFillRunning_ = false;
+                        if (!token.IsCancellationRequested)
+                            QueueInvalidate();
+                    }
+                });
             }
         }
-    }
-
-    // Background fill for missing tiles...
-    if (needsFill && level_ != null && !backgroundFillRunning_ && !renderAllRunning_)
-    {
-        backgroundFillRunning_ = true;
-        var token = cts_?.Token ?? CancellationToken.None;
-        int maxPar = Math.Max(1, Environment.ProcessorCount);
-        Task.Run(() =>
-        {
-            try
-            {
-                var fillBlocks = new List<(int, int)>();
-                for (int bx = bxMin; bx <= bxMax; bx++)
-                    for (int bz = bzMin; bz <= bzMax; bz++)
-                        if (!tiles_.ContainsKey((bx, bz)))
-                            fillBlocks.Add((bx, bz));
-
-                Parallel.ForEach(fillBlocks,
-                    new ParallelOptions { MaxDegreeOfParallelism = maxPar, CancellationToken = token },
-                    b => RenderBlock(b, token));
-            }
-            catch (OperationCanceledException) { }
-            finally
-            {
-                backgroundFillRunning_ = false;
-                if (!token.IsCancellationRequested)
-                    QueueInvalidate();
-            }
-        });
-    }
-}
 
         private void EvictTiles()
         {
@@ -521,7 +514,7 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
         public override void Render(DrawingContext context)
         {
             double w = Bounds.Width, h = Bounds.Height;
-    
+
             if (view_ == null)
             {
                 context.FillRectangle(new SolidColorBrush(Color.FromRgb(18, 18, 22)), new Rect(0, 0, w, h));
@@ -532,32 +525,24 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
 
             context.FillRectangle(new SolidColorBrush(Color.FromRgb(18, 18, 22)), new Rect(0, 0, w, h));
 
-            // ============ 关键修改 3：从 view_ 中裁剪显示区域 ============
-            // view_ 的分辨率是 (w * viewScale_ + 2*margin) × (h * viewScale_ + 2*margin)
-            // 显示区域是 w × h，从 view_ 的中心裁剪
             double viewW = view_.PixelSize.Width;
             double viewH = view_.PixelSize.Height;
-    
-            // 计算裁剪区域（从 view_ 的中心裁剪出 w×h 的区域）
+
             double srcX = (viewW - w) / 2.0;
             double srcY = (viewH - h) / 2.0;
             double srcW = w;
             double srcH = h;
-    
-            // 使用最近邻插值，不做任何平滑处理
+
             using (context.PushRenderOptions(new Avalonia.Media.RenderOptions
                    {
                        BitmapInterpolationMode = BitmapInterpolationMode.None
                    }))
             {
-                // 如果 view_ 分辨率大于显示区域，裁剪显示（1:1 像素映射）
-                // 如果 view_ 分辨率小于显示区域，放大显示（但用最近邻，保持像素块）
-                context.DrawImage(view_, 
+                context.DrawImage(view_,
                     new Rect(Math.Max(0, srcX), Math.Max(0, srcY), srcW, srcH),
                     new Rect(0, 0, w, h));
             }
 
-            // 绘制网格（使用正常插值保持文字清晰）
             if (level_ != null && chunkCount_ > 0)
             {
                 double ox = w / 2.0 - centerX_ * viewScale_;
@@ -680,8 +665,8 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
             bool drawMinor = chunkPx >= 6;
             bool drawMajor = (8.0 * chunkPx) >= 6;
 
-            var minorPen = new Pen(new SolidColorBrush(Color.FromArgb(70, 255, 255, 255)), 1);
-            var majorPen = new Pen(new SolidColorBrush(Color.FromArgb(190, 255, 255, 255)), 1);
+            var minorPen = new Pen(new SolidColorBrush(Color.FromArgb(30, 255, 255, 255)), 0.5);
+            var majorPen = new Pen(new SolidColorBrush(Color.FromArgb(80, 255, 255, 255)), 0.5);
 
             for (int cx = cxMin; cx <= cxMax; cx++)
             {
