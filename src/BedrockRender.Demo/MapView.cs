@@ -351,24 +351,11 @@ namespace BedrockRender.Demo
         return;
     }
 
-    // ============ 关键修改 1：view_ 分辨率跟随 viewScale_ ============
-    // 这样 view_ 有足够的像素来显示所有细节，避免 GPU 缩放
     int margin = (int)Math.Max(64, Math.Min(300, w / 2 - 1));
     margin_ = margin;
     
-    // view_ 的分辨率 = 窗口大小 × viewScale_，确保每个方块都有对应的像素
-    double scaleFactor = Math.Max(1.0, viewScale_);  // 最小为 1
-    int ow = (int)(w * scaleFactor) + 2 * margin;
-    int oh = (int)(h * scaleFactor) + 2 * margin;
-    
-    // 限制最大分辨率防止 OOM
-    const int MAX_DIM = 16384;
-    ow = Math.Min(ow, MAX_DIM);
-    oh = Math.Min(oh, MAX_DIM);
-    
-    // 确保至少和窗口一样大
-    ow = Math.Max(ow, (int)w);
-    oh = Math.Max(oh, (int)h);
+    int ow = (int)w + 2 * margin;
+    int oh = (int)h + 2 * margin;
 
     if (view_ == null ||
         view_.PixelSize.Width != ow ||
@@ -376,7 +363,6 @@ namespace BedrockRender.Demo
     {
         view_?.Dispose();
         view_ = new RenderTargetBitmap(new PixelSize(ow, oh), new Vector(96, 96));
-        Console.WriteLine($"RenderView: view_ 分辨率 = {ow}x{oh}, viewScale_ = {viewScale_}, scaleFactor = {scaleFactor}");
     }
 
     using (var dc = view_.CreateDrawingContext())
