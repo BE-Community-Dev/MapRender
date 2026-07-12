@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -12,7 +11,6 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
-using BedrockLevel.Cache;
 using BedrockLevel.Chunk;
 using BedrockLevel.Keys;
 using BedrockLevel.Level;
@@ -23,11 +21,9 @@ namespace BedrockRender.Demo
     internal sealed class MapView : Avalonia.Controls.Control
     {
         private const int MaxTiles = 2000;
-        private const int MaxCache = 5000;
 
         private global::BedrockLevel.Level.BedrockLevel level_;
         private List<ChunkPos> positions_;
-        private string cacheDir_;
         private ColorPalette palette_;
         private ChunkRenderer renderer_;
 
@@ -44,16 +40,11 @@ namespace BedrockRender.Demo
         private readonly ConcurrentDictionary<(int, int), WriteableBitmap> tiles_ = new();
         private readonly ConcurrentDictionary<(int, int), int> lastUsed_ = new();
         private int frame_;
-        private readonly ConcurrentDictionary<(int, int, int), byte[]> tileCache_ = new();
-        private readonly ConcurrentDictionary<(int, int, int), int> cacheLastUsed_ = new();
-        private int cacheFrame_;
         private bool backgroundFillRunning_;
         private volatile bool renderAllRunning_;
         private CancellationTokenSource cts_;
         private int totalBlocks_;
         private int doneBlocks_;
-        private int cachedTotal_;
-        private int cachedDone_;
 
         private double viewScale_ = 4;
         private double centerX_ = 0;
@@ -96,8 +87,6 @@ namespace BedrockRender.Demo
             level_ = level;
             positions_ = positions;
             LevelName = levelName;
-            cacheDir_ = Path.Combine(level.RootPath, ".cache");
-            Directory.CreateDirectory(cacheDir_);
             dimension_ = dimension;
             mode_ = mode;
             tileScale_ = tileScale;
@@ -107,7 +96,6 @@ namespace BedrockRender.Demo
             FitToView();
             RenderView();
             RenderAll();
-            StartCaching();
         }
 
         public void UpdateView(int dimension, ViewMode mode, int tileScale)
@@ -257,21 +245,6 @@ namespace BedrockRender.Demo
             int bx = b.bx, bz = b.bz;
             int ts = tileScale_;
             int bc = BlockChunks;
-
-            var cacheKey = (bx, bz, ts);
-            if (tileCache_.TryRemove(cacheKey, out var compressed))
-            {
-                int tileSize = BlockChunks * 16 * tileScale_;
-                tiles_[(bx, bz)] = DecompressTile(compressed, tileSize, tileSize);
-                lastUsed_[(bx, bz)] = int.MaxValue;
-                cacheLastUsed_.TryRemove(cacheKey, out _);
-                int done = Interlocked.Increment(ref doneBlocks_);
-                QueueInvalidate();
-                if (done % 8 == 0 || done == totalBlocks_)
-                    RaiseStatus();
-                return;
-            }
-
             int baseCx = bx * bc;
             int baseCz = bz * bc;
             int blockPx = bc * 16 * ts;
@@ -352,81 +325,6 @@ namespace BedrockRender.Demo
                 RaiseStatus();
         }
 
-        private static byte[] CompressTile(WriteableBitmap bmp)
-        {
-            using var fb = bmp.Lock();
-            int len = fb.RowBytes * fb.Size.Height;
-            unsafe
-            {
-                var span = new ReadOnlySpan<byte>((void*)fb.Address, len);
-                return ChunkCache.BrotliCompress(span.ToArray());
-            }
-        }
-
-        private static WriteableBitmap DecompressTile(byte[] compressed, int w, int h)
-        {
-            var pixels = ChunkCache.BrotliDecompress(compressed);
-            var bmp = new WriteableBitmap(new PixelSize(w, h), new Vector(96, 96),
-                PixelFormat.Bgra8888, AlphaFormat.Premul);
-            using (var fb = bmp.Lock())
-            {
-                unsafe
-                {
-                    var dst = new Span<byte>((void*)fb.Address, pixels.Length);
-                    pixels.AsSpan().CopyTo(dst);
-                }
-            }
-
-            return bmp;
-        }
-
-        // ----- Disk cache -----
-
-        private void StartCaching()
-        {
-            if (level_ == null || positions_ == null) return;
-            cachedTotal_ = positions_.Count;
-            cachedDone_ = 0;
-            var snapshot = positions_;
-            Task.Factory.StartNew(() => CacheAll(snapshot), TaskCreationOptions.LongRunning);
-        }
-
-        private void CacheAll(List<ChunkPos> positions)
-        {
-            int maxPar = Math.Max(1, Environment.ProcessorCount);
-            Parallel.ForEach(positions,
-                new ParallelOptions { MaxDegreeOfParallelism = maxPar },
-                cp =>
-                {
-                    try
-                    {
-                        var raw = level_.GetRawChunk(cp);
-                        if (raw.Loaded())
-                            StoreRaw(cp, raw);
-                        int c = Interlocked.Increment(ref cachedDone_);
-                        if (c % 1024 == 0) RaiseStatus();
-                    }
-                    catch (Exception)
-                    {
-                    }
-                });
-        }
-
-        private void StoreRaw(ChunkPos cp, RawChunk rc)
-        {
-            try
-            {
-                var compressed = ChunkCache.BrotliCompress(rc.ToRaw());
-                File.WriteAllBytes(CachePath(cp), compressed);
-            }
-            catch (Exception)
-            {
-            }
-        }
-
-        private string CachePath(ChunkPos cp) =>
-            Path.Combine(cacheDir_, $"{cp.X}.{cp.Z}.{cp.Dim}.blkcache");
-
         // ----- Offscreen compositing -----
 
         private void InvalidateView()
@@ -487,7 +385,6 @@ namespace BedrockRender.Demo
         RenderScene(dc, ow, oh, w, h);
     }
     EvictTiles();
-    EvictCache();
     InvalidateVisual();
 }
 
@@ -622,51 +519,14 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
             if (candidates.Count == 0) return;
             candidates.Sort((a, b) => a.Item3.CompareTo(b.Item3));
             int need = tiles_.Count - MaxTiles;
-            var evicted = new List<(int, int, WriteableBitmap)>();
             for (int i = 0; i < candidates.Count && i < need; i++)
             {
                 var key = (candidates[i].Item1, candidates[i].Item2);
                 if (tiles_.TryRemove(key, out var bmp))
-                    evicted.Add((key.Item1, key.Item2, bmp));
-                lastUsed_.TryRemove(key, out _);
-            }
-
-            // Compress evicted tiles in background so the UI thread stays responsive.
-            if (evicted.Count > 0)
-            {
-                int ts = tileScale_;
-                Task.Run(() =>
                 {
-                    foreach (var (bx, bz, bmp) in evicted)
-                    {
-                        tileCache_[(bx, bz, ts)] = CompressTile(bmp);
-                        cacheLastUsed_[(bx, bz, ts)] = cacheFrame_++;
-                        bmp.Dispose();
-                    }
-                });
-            }
-        }
-
-        private void EvictCache()
-        {
-            if (tileCache_.Count <= MaxCache) return;
-            int threshold = cacheFrame_ - 10;
-            var candidates = new List<(int, int, int, int)>();
-            foreach (var kv in cacheLastUsed_)
-            {
-                int lu = kv.Value;
-                if (lu < threshold)
-                    candidates.Add((kv.Key.Item1, kv.Key.Item2, kv.Key.Item3, lu));
-            }
-
-            if (candidates.Count == 0) return;
-            candidates.Sort((a, b) => a.Item4.CompareTo(b.Item4));
-            int need = tileCache_.Count - MaxCache;
-            for (int i = 0; i < candidates.Count && i < need; i++)
-            {
-                var key = (candidates[i].Item1, candidates[i].Item2, candidates[i].Item3);
-                tileCache_.TryRemove(key, out _);
-                cacheLastUsed_.TryRemove(key, out _);
+                    bmp.Dispose();
+                }
+                lastUsed_.TryRemove(key, out _);
             }
         }
 
@@ -893,12 +753,9 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
                     : "世界坐标: -   区块坐标: -";
                 int done = Math.Min(doneBlocks_, totalBlocks_);
                 string progress = totalBlocks_ > 0 ? $"已渲染区块块: {done}/{totalBlocks_}" : "无区块";
-                string cacheInfo = cachedTotal_ > 0
-                    ? $" | 已缓存: {Math.Min(cachedDone_, cachedTotal_)}/{cachedTotal_}"
-                    : "";
                 string lodInfo = $" | LOD: {tileScale_}px/格 x{BlockChunks}区块";
                 string status = $"存档: {LevelName} | 维度: {DimName(dimension_)} | 模式: {mode_} | " +
-                                $"区块数: {chunkCount_} | {progress}{cacheInfo}{lodInfo} | 缩放: {viewScale_:F2} px/格 | {coord}";
+                                $"区块数: {chunkCount_} | {progress}{lodInfo} | 缩放: {viewScale_:F2} px/格 | {coord}";
                 StatusChanged?.Invoke(status);
 
                 double? frac = totalBlocks_ > 0 ? (double)done / totalBlocks_ : (double?)null;
@@ -916,8 +773,6 @@ private void RenderScene(DrawingContext context, double viewW, double viewH, dou
             foreach (var bmp in tiles_.Values)
                 bmp.Dispose();
             tiles_.Clear();
-            tileCache_.Clear();
-            cacheLastUsed_.Clear();
         }
     }
 }
